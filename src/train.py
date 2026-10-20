@@ -13,6 +13,15 @@ import argparse
 import logging
 import torch
 
+# Prevent peft from crashing on incompatible pre-installed torchao in environments like Google Colab
+try:
+    import torchao
+    from packaging import version
+    if version.parse(getattr(torchao, "__version__", "0.0.0")) < version.parse("0.16.0"):
+        sys.modules["torchao"] = None
+except Exception:
+    pass
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -116,6 +125,11 @@ def parse_args():
         help="Merge LoRA adapter into base model and push full weights to Hub",
     )
     parser.add_argument(
+        "--only_merge_and_push",
+        action="store_true",
+        help="Skip training and immediately merge existing adapter in --output_dir and push to Hub",
+    )
+    parser.add_argument(
         "--hub_repo_id",
         "--hub_model_id",
         dest="hub_repo_id",
@@ -206,6 +220,24 @@ def train():
     logger.info(f"Arguments: {vars(args)}")
 
     setup_telemetry(args)
+
+    hub_repo_id = args.hub_repo_id or os.environ.get("HF_REPO_ID")
+    if hub_repo_id:
+        hub_repo_id = hub_repo_id.replace("<", "").replace(">", "").strip()
+    hub_token = args.hub_token or os.environ.get("HF_TOKEN")
+
+    if args.only_merge_and_push:
+        if not hub_repo_id:
+            raise ValueError("--only_merge_and_push requested, but --hub_repo_id or HF_REPO_ID is not provided.")
+        logger.info(f"Skipping training. Merging existing adapter from '{args.output_dir}' and pushing to '{hub_repo_id}'...")
+        merge_and_push_to_hub(
+            base_model_id=args.model_id,
+            adapter_dir=args.output_dir,
+            hub_repo_id=hub_repo_id,
+            hub_token=hub_token,
+        )
+        logger.info("Merge and upload completed successfully!")
+        return
 
     from transformers import AutoTokenizer, AutoModelForCausalLM
     from datasets import load_dataset
@@ -419,6 +451,15 @@ def train():
 
 def merge_and_push_to_hub(base_model_id: str, adapter_dir: str, hub_repo_id: str, hub_token: str = None):
     """Load base model in full precision, merge LoRA weights, and upload to Hub."""
+    # Ensure torchao doesn't break peft dispatcher
+    try:
+        import torchao
+        from packaging import version
+        if version.parse(getattr(torchao, "__version__", "0.0.0")) < version.parse("0.16.0"):
+            sys.modules["torchao"] = None
+    except Exception:
+        pass
+
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
 

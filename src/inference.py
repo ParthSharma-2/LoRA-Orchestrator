@@ -4,8 +4,18 @@ Runs efficiently on Intel i7 CPU (or CUDA GPU if available).
 """
 
 import os
+import sys
 import argparse
 import torch
+
+try:
+    import torchao
+    from packaging import version
+    if version.parse(getattr(torchao, "__version__", "0.0.0")) < version.parse("0.16.0"):
+        sys.modules["torchao"] = None
+except Exception:
+    pass
+
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 try:
