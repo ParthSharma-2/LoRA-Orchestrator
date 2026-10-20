@@ -287,11 +287,10 @@ def train():
     logger.info("Injecting LoRA adapters...")
     model = get_peft_model(model, peft_config)
 
-    # Ensure all trainable parameters are in target_dtype / float32, never bfloat16 on capability < 8 GPUs
+    # Ensure all trainable parameters are in float32 / target_dtype, never bfloat16 on capability < 8 GPUs
     for name, param in model.named_parameters():
-        if param.requires_grad and param.dtype == torch.bfloat16:
-            logger.info(f"Casting trainable LoRA parameter '{name}' from bfloat16 to {target_dtype}")
-            param.data = param.data.to(target_dtype)
+        if param.requires_grad and (param.dtype == torch.bfloat16 or not is_bf16_supported()):
+            param.data = param.data.to(torch.float32)
 
     model.print_trainable_parameters()
 
@@ -315,7 +314,11 @@ def train():
         save_strategy="steps",
         save_steps=args.save_steps,
         save_total_limit=2,
-        fp16=(cuda_available and not is_bf16_supported()),
+        # On Turing GPUs (e.g. Tesla T4), bitsandbytes handles 16-bit compute via bnb_4bit_compute_dtype=float16.
+        # Enabling Trainer fp16=True triggers PyTorch's AMP GradScaler, which fails on non-Ampere architectures
+        # with NotImplementedError in _amp_foreach_non_finite_check_and_unscale_cuda.
+        # We enable bf16 on Ampere+ (A100/A10G) and keep fp16/bf16 False on Turing (T4), relying on bitsandbytes compute_dtype.
+        fp16=False,
         bf16=(cuda_available and is_bf16_supported()),
         use_cpu=(not cuda_available),
         gradient_checkpointing=use_gradient_checkpointing,
