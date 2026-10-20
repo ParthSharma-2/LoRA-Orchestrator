@@ -481,7 +481,24 @@ def merge_and_push_to_hub(base_model_id: str, adapter_dir: str, hub_repo_id: str
     for name, param in base_model.named_parameters():
         if param.dtype == torch.bfloat16 and target_dtype != torch.bfloat16:
             param.data = param.data.to(target_dtype)
-    tokenizer = AutoTokenizer.from_pretrained(adapter_dir, trust_remote_code=True)
+    # Resolve adapter directory robustly
+    if not os.path.exists(adapter_dir):
+        for candidate in [
+            os.path.join("..", adapter_dir),
+            os.path.join("/content", "LoRA-Orchestrator", "output"),
+            os.path.join("/content", "output"),
+        ]:
+            if os.path.exists(candidate):
+                logger.info(f"Found adapter directory at: {candidate}")
+                adapter_dir = candidate
+                break
+
+    # Load tokenizer from adapter_dir or fallback to base_model_id
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(adapter_dir, trust_remote_code=True)
+    except Exception:
+        logger.info(f"Tokenizer files not in '{adapter_dir}'. Loading base tokenizer from '{base_model_id}'...")
+        tokenizer = AutoTokenizer.from_pretrained(base_model_id, trust_remote_code=True)
 
     logger.info(f"Loading PEFT adapter from '{adapter_dir}'...")
     peft_model = PeftModel.from_pretrained(base_model, adapter_dir)
