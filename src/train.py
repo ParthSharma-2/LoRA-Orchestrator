@@ -265,6 +265,14 @@ def train():
     # Disable KV cache during training to allow gradient checkpointing
     model.config.use_cache = False
 
+    # Ensure all non-quantized weights (embed_tokens, lm_head, norm) match target_dtype.
+    # SmolLM2 checkpoint has these in bfloat16 by default. If left as bfloat16 on Turing (Tesla T4),
+    # PyTorch's GradScaler throws: NotImplementedError: _amp_foreach_non_finite_check_and_unscale_cuda not implemented for 'BFloat16'
+    for name, param in model.named_parameters():
+        if not hasattr(param, "quant_state") and param.dtype == torch.bfloat16:
+            logger.info(f"Casting non-quantized parameter '{name}' from bfloat16 to {target_dtype}")
+            param.data = param.data.to(target_dtype)
+
     # 4. LoRA Configuration
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -274,6 +282,18 @@ def train():
         target_modules=args.target_modules,
         bias="none",
     )
+
+    from peft import get_peft_model
+    logger.info("Injecting LoRA adapters...")
+    model = get_peft_model(model, peft_config)
+
+    # Ensure all trainable parameters are in target_dtype / float32, never bfloat16 on capability < 8 GPUs
+    for name, param in model.named_parameters():
+        if param.requires_grad and param.dtype == torch.bfloat16:
+            logger.info(f"Casting trainable LoRA parameter '{name}' from bfloat16 to {target_dtype}")
+            param.data = param.data.to(target_dtype)
+
+    model.print_trainable_parameters()
 
     # 5. Training Arguments / SFTConfig
     cuda_available = torch.cuda.is_available()
@@ -334,7 +354,7 @@ def train():
         trainer_kwargs = {
             "model": model,
             "train_dataset": dataset,
-            "peft_config": peft_config,
+            "peft_config": None,  # Model already explicitly wrapped and dtype-sanitized
             "args": training_args,
         }
     else:
@@ -343,7 +363,7 @@ def train():
         trainer_kwargs = {
             "model": model,
             "train_dataset": dataset,
-            "peft_config": peft_config,
+            "peft_config": None,  # Model already explicitly wrapped and dtype-sanitized
             "args": training_args,
             "max_seq_length": args.max_seq_length,
             "dataset_text_field": args.dataset_text_field,
@@ -412,6 +432,11 @@ def merge_and_push_to_hub(base_model_id: str, adapter_dir: str, hub_repo_id: str
         device_map="auto" if torch.cuda.is_available() else "cpu",
         trust_remote_code=True,
     )
+
+    # Ensure all base model weights match target_dtype
+    for name, param in base_model.named_parameters():
+        if param.dtype == torch.bfloat16 and target_dtype != torch.bfloat16:
+            param.data = param.data.to(target_dtype)
     tokenizer = AutoTokenizer.from_pretrained(adapter_dir, trust_remote_code=True)
 
     logger.info(f"Loading PEFT adapter from '{adapter_dir}'...")

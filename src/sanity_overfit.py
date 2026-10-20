@@ -180,6 +180,11 @@ def run_sanity_overfit(args):
     )
     base_model.to(device)
 
+    # Ensure all parameters match target torch_dtype
+    for name, param in base_model.named_parameters():
+        if param.dtype == torch.bfloat16 and torch_dtype != torch.bfloat16:
+            param.data = param.data.to(torch_dtype)
+
     # Configure LoRA
     # SmolLM2 uses standard LLaMA-style projections: q_proj, k_proj, v_proj, o_proj
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
