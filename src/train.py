@@ -133,6 +133,21 @@ def parse_args():
     return parser.parse_args()
 
 
+def is_bf16_supported() -> bool:
+    """
+    Check if the current CUDA device supports hardware BFloat16 GEMM operations.
+    NVIDIA Ampere (compute capability 8.0) or higher is required for native BF16 Tensor Cores.
+    Turing (e.g. Tesla T4, RTX 2080 - compute capability 7.5) and earlier do not support BF16 GEMM.
+    """
+    if not torch.cuda.is_available():
+        return False
+    try:
+        cap = torch.cuda.get_device_capability()
+        return cap[0] >= 8 and torch.cuda.is_bf16_supported()
+    except Exception:
+        return False
+
+
 def setup_telemetry(args):
     """Set up reporting environments like Weights & Biases."""
     if args.report_to == "wandb":
@@ -154,7 +169,7 @@ def get_quantization_and_model_config(args):
     if can_use_qlora:
         try:
             from transformers import BitsAndBytesConfig
-            compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            compute_dtype = torch.bfloat16 if is_bf16_supported() else torch.float16
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
@@ -225,22 +240,23 @@ def train():
     # 3. Load Model with QLoRA configuration
     bnb_config = get_quantization_and_model_config(args)
     device_map = "auto" if torch.cuda.is_available() else None
-    torch_dtype = (
+    target_dtype = (
         torch.bfloat16
-        if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        if is_bf16_supported()
         else (torch.float16 if torch.cuda.is_available() else torch.float32)
     )
 
     model_kwargs = {
         "trust_remote_code": True,
-        "torch_dtype": torch_dtype,
+        "dtype": target_dtype,
+        "torch_dtype": target_dtype,
     }
     if device_map:
         model_kwargs["device_map"] = device_map
     if bnb_config:
         model_kwargs["quantization_config"] = bnb_config
 
-    logger.info(f"Loading Model: {args.model_id}")
+    logger.info(f"Loading Model: {args.model_id} (target_dtype={target_dtype})")
     model = AutoModelForCausalLM.from_pretrained(args.model_id, **model_kwargs)
 
     if bnb_config is not None:
@@ -279,8 +295,8 @@ def train():
         save_strategy="steps",
         save_steps=args.save_steps,
         save_total_limit=2,
-        fp16=(cuda_available and not torch.cuda.is_bf16_supported()),
-        bf16=(cuda_available and torch.cuda.is_bf16_supported()),
+        fp16=(cuda_available and not is_bf16_supported()),
+        bf16=(cuda_available and is_bf16_supported()),
         use_cpu=(not cuda_available),
         gradient_checkpointing=use_gradient_checkpointing,
         report_to=args.report_to,
@@ -384,10 +400,15 @@ def merge_and_push_to_hub(base_model_id: str, adapter_dir: str, hub_repo_id: str
     from peft import PeftModel
 
     logger.info(f"Loading base model '{base_model_id}' for merge...")
-    torch_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+    target_dtype = (
+        torch.bfloat16
+        if is_bf16_supported()
+        else (torch.float16 if torch.cuda.is_available() else torch.float32)
+    )
     base_model = AutoModelForCausalLM.from_pretrained(
         base_model_id,
-        torch_dtype=torch_dtype,
+        dtype=target_dtype,
+        torch_dtype=target_dtype,
         device_map="auto" if torch.cuda.is_available() else "cpu",
         trust_remote_code=True,
     )

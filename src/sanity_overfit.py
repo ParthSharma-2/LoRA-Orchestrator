@@ -70,6 +70,21 @@ def parse_args():
     return parser.parse_args()
 
 
+def is_bf16_supported() -> bool:
+    """
+    Check if the current CUDA device supports hardware BFloat16 GEMM operations.
+    Requires NVIDIA compute capability >= 8.0 (Ampere or newer).
+    Turing (Tesla T4, RTX 2080, CC 7.5) and older do not support BF16 GEMM.
+    """
+    if not torch.cuda.is_available():
+        return False
+    try:
+        cap = torch.cuda.get_device_capability()
+        return cap[0] >= 8 and torch.cuda.is_bf16_supported()
+    except Exception:
+        return False
+
+
 def get_single_batch(tokenizer, dataset_name=None, batch_size=2, max_length=128, device="cpu"):
     """
     Fetch a single batch of 2 samples.
@@ -139,7 +154,7 @@ def run_sanity_overfit(args):
     # Determine execution device and dtype
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        torch_dtype = torch.bfloat16 if is_bf16_supported() else torch.float16
         print(f"[Device] Using CUDA GPU: {torch.cuda.get_device_name(0)} (dtype: {torch_dtype})")
     else:
         device = torch.device("cpu")
@@ -156,9 +171,10 @@ def run_sanity_overfit(args):
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    print(f"Loading Model: {args.model_id}")
+    print(f"Loading Model: {args.model_id} (target_dtype={torch_dtype})")
     base_model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
+        dtype=torch_dtype,
         torch_dtype=torch_dtype,
         trust_remote_code=True,
     )
