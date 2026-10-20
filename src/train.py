@@ -229,10 +229,33 @@ def train():
     if args.only_merge_and_push:
         if not hub_repo_id:
             raise ValueError("--only_merge_and_push requested, but --hub_repo_id or HF_REPO_ID is not provided.")
-        logger.info(f"Skipping training. Merging existing adapter from '{args.output_dir}' and pushing to '{hub_repo_id}'...")
+
+        # Ensure adapter_dir exists and contains adapter_config.json
+        adapter_path = os.path.abspath(args.output_dir)
+        if not os.path.exists(os.path.join(adapter_path, "adapter_config.json")):
+            logger.info("Searching filesystem for 'adapter_config.json'...")
+            found_dir = None
+            search_roots = ["/content", ".", ".."] if os.path.exists("/content") else [".", ".."]
+            for s_root in search_roots:
+                if found_dir:
+                    break
+                for root, dirs, files in os.walk(s_root):
+                    if "adapter_config.json" in files:
+                        found_dir = os.path.abspath(root)
+                        break
+            if found_dir:
+                logger.info(f"Auto-discovered adapter at: {found_dir}")
+                adapter_path = found_dir
+            else:
+                raise FileNotFoundError(
+                    f"Could not find 'adapter_config.json' in '{args.output_dir}' or anywhere in {search_roots}. "
+                    "If your Colab session restarted or switched runtimes, the ephemeral disk may have been reset."
+                )
+
+        logger.info(f"Merging adapter from '{adapter_path}' and pushing to '{hub_repo_id}'...")
         merge_and_push_to_hub(
             base_model_id=args.model_id,
-            adapter_dir=args.output_dir,
+            adapter_dir=adapter_path,
             hub_repo_id=hub_repo_id,
             hub_token=hub_token,
         )
@@ -481,15 +504,17 @@ def merge_and_push_to_hub(base_model_id: str, adapter_dir: str, hub_repo_id: str
     for name, param in base_model.named_parameters():
         if param.dtype == torch.bfloat16 and target_dtype != torch.bfloat16:
             param.data = param.data.to(target_dtype)
-    # Resolve adapter directory robustly
-    if not os.path.exists(adapter_dir):
+    # Resolve adapter directory to an absolute local path
+    adapter_dir = os.path.abspath(adapter_dir)
+    if not os.path.exists(os.path.join(adapter_dir, "adapter_config.json")):
         for candidate in [
-            os.path.join("..", adapter_dir),
-            os.path.join("/content", "LoRA-Orchestrator", "output"),
-            os.path.join("/content", "output"),
+            os.path.abspath(os.path.join("..", "output")),
+            "/content/output",
+            "/content/LoRA-Orchestrator/output",
+            "/content/LoRA-Orchestrator/LoRA-Orchestrator/output",
         ]:
-            if os.path.exists(candidate):
-                logger.info(f"Found adapter directory at: {candidate}")
+            if os.path.exists(os.path.join(candidate, "adapter_config.json")):
+                logger.info(f"Found adapter_config.json at: {candidate}")
                 adapter_dir = candidate
                 break
 
