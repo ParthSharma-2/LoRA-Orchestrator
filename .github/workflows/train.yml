@@ -1,0 +1,98 @@
+name: QLoRA Continuous Training & Deployment (Modal)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "infra/**"
+      - "requirements.txt"
+  workflow_dispatch:
+    inputs:
+      epochs:
+        description: "Number of training epochs"
+        required: false
+        default: "3"
+        type: string
+      batch_size:
+        description: "Per-device training batch size"
+        required: false
+        default: "4"
+        type: string
+      learning_rate:
+        description: "Learning rate"
+        required: false
+        default: "2e-4"
+        type: string
+      gpu:
+        description: "Modal GPU accelerator (e.g. A10G, T4, A100)"
+        required: false
+        default: "A10G"
+        type: string
+      push_to_hub:
+        description: "Push final model & adapter to Hugging Face Hub"
+        required: false
+        default: false
+        type: boolean
+      hub_model_id:
+        description: "Target HF Hub repo ID (e.g. username/smollm2-qlora)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  train-on-modal:
+    name: Serverless QLoRA Training (Modal)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Modal CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install modal
+
+      - name: Authenticate with Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          modal token set --token-id "$MODAL_TOKEN_ID" --token-secret "$MODAL_TOKEN_SECRET"
+
+      - name: Launch Serverless Training
+        env:
+          MODAL_GPU: ${{ github.event.inputs.gpu || 'A10G' }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CMD="modal run infra/modal_app.py \
+              --epochs ${{ github.event.inputs.epochs || '3' }} \
+              --batch-size ${{ github.event.inputs.batch_size || '4' }} \
+              --learning-rate ${{ github.event.inputs.learning_rate || '2e-4' }}"
+
+            if [ "${{ github.event.inputs.push_to_hub }}" = "true" ]; then
+              CMD="$CMD --push-to-hub"
+              if [ -n "${{ github.event.inputs.hub_model_id }}" ]; then
+                CMD="$CMD --hub-model-id ${{ github.event.inputs.hub_model_id }}"
+              fi
+            fi
+            echo "🚀 Executing manual workflow dispatch: $CMD"
+            eval $CMD
+          else
+            echo "🚀 Executing automated push trigger with default parameters..."
+            modal run infra/modal_app.py
+          fi
