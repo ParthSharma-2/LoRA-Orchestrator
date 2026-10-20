@@ -1,0 +1,12 @@
+torch
+transformers>=4.44.0
+peft>=0.12.0
+trl>=0.9.6
+bitsandbytes
+datasets>=2.20.0
+accelerate>=0.33.0
+wandb
+scipy
+sentencepiece
+huggingface_hub
+python-dotenv
