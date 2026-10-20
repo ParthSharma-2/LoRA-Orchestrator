@@ -290,19 +290,31 @@ def train():
     trainer_init_params = inspect.signature(SFTTrainer.__init__).parameters
 
     if has_sft_config:
-        sft_config_params = inspect.signature(SFTConfig.__init__).parameters
-        sft_kwargs = {}
+        sft_config_params = set(inspect.signature(SFTConfig.__init__).parameters.keys())
+        
+        # Merge all training configurations
+        candidate_args = dict(**common_training_args)
+        
+        # Handle max length parameter naming across TRL versions
         if "max_length" in sft_config_params:
-            sft_kwargs["max_length"] = args.max_seq_length
+            candidate_args["max_length"] = args.max_seq_length
         elif "max_seq_length" in sft_config_params:
-            sft_kwargs["max_seq_length"] = args.max_seq_length
+            candidate_args["max_seq_length"] = args.max_seq_length
         
         if "dataset_text_field" in sft_config_params:
-            sft_kwargs["dataset_text_field"] = args.dataset_text_field
+            candidate_args["dataset_text_field"] = args.dataset_text_field
         if "packing" in sft_config_params:
-            sft_kwargs["packing"] = False
+            candidate_args["packing"] = False
 
-        training_args = SFTConfig(**sft_kwargs, **common_training_args)
+        # Filter strictly to arguments accepted by SFTConfig in this TRL version
+        filtered_sft_args = {k: v for k, v in candidate_args.items() if k in sft_config_params}
+        
+        # If warmup_steps is supported but warmup_ratio is not, convert to steps
+        if "warmup_steps" in sft_config_params and "warmup_ratio" not in sft_config_params:
+            total_steps = max(1, (len(dataset) // (args.batch_size * args.gradient_accumulation_steps)) * int(args.epochs))
+            filtered_sft_args["warmup_steps"] = max(1, int(total_steps * args.warmup_ratio))
+
+        training_args = SFTConfig(**filtered_sft_args)
         trainer_kwargs = {
             "model": model,
             "train_dataset": dataset,
@@ -342,6 +354,8 @@ def train():
 
     # 8. Push to Hugging Face Hub (Adapter or Merged)
     hub_repo_id = args.hub_repo_id or os.environ.get("HF_REPO_ID")
+    if hub_repo_id:
+        hub_repo_id = hub_repo_id.replace("<", "").replace(">", "").strip()
     hub_token = args.hub_token or os.environ.get("HF_TOKEN")
 
     if args.merge_and_push:
