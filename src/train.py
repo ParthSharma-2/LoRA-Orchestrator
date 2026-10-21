@@ -532,7 +532,7 @@ def merge_and_push_to_hub(base_model_id: str, adapter_dir: str, hub_repo_id: str
     merged_model = peft_model.merge_and_unload()
 
     logger.info(f"Pushing merged model to Hugging Face Hub: {hub_repo_id}...")
-    merged_model.push_to_hub(hub_repo_id, token=hub_token, safe_serialization=True)
+    merged_model.push_to_hub(hub_repo_id, token=hub_token)
     tokenizer.push_to_hub(hub_repo_id, token=hub_token)
     logger.info("Merged model successfully uploaded to Hub.")
 
